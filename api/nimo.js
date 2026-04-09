@@ -11,6 +11,7 @@ export default async function handler(req, res) {
     const url = `https://m.nimo.tv/${path}`;
 
     try {
+        // FETCH BẢN CŨ: Mộc mạc, không Referer, không làm hệ thống chống Bot nghi ngờ
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
@@ -19,6 +20,8 @@ export default async function handler(req, res) {
         });
 
         const html = await response.text();
+        
+        // REGEX BẢN CŨ: Bám chặt thẻ script để không văng 404
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
         if (!jsonMatch) {
@@ -33,13 +36,16 @@ export default async function handler(req, res) {
         // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ
+        // BÓC TÁCH THAM SỐ GỐC
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
         const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
+        
+        // LẤY CHẤT LƯỢNG GỐC CỦA NIMO (Để tránh ép FHD gây giật lag)
+        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500';
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -48,16 +54,18 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // XỬ LÝ CHẤT LƯỢNG (Dùng ?q=720 để giảm buffering)
-        const q = req.query.q || '1080';
-        let ratio = '6000'; // 1080p
-        if (q === '720') ratio = '2500';
-        if (q === '480') ratio = '1000';
-        if (q === '360') ratio = '500';
+        // XỬ LÝ CHẤT LƯỢNG THÔNG MINH
+        const q = req.query.q;
+        let ratio = defaultRatio; // Mặc định lấy luồng Nimo đề xuất (Thường là 720p)
+
+        if (q === '1080') ratio = '6000';
+        else if (q === '720') ratio = '2500';
+        else if (q === '480') ratio = '1000';
+        else if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
+        // TẠO THAM SỐ GIẢ LẬP
         const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
         const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
         const now = Date.now();
@@ -78,7 +86,7 @@ export default async function handler(req, res) {
                          `&sdk_sid=${now}` +
                          `&a_block=0`;
 
-        // TRẢ VỀ VIDEO TRỰC TIẾP
+        // CHUYỂN HƯỚNG TRỰC TIẾP TỚI VIDEO
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
