@@ -9,25 +9,22 @@ export default async function handler(req, res) {
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Referer': 'https://www.google.com/',
-                'Cache-Control': 'max-age=0',
                 'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode:': 'navigate',
+                'Sec-Fetch-Mode': 'navigate', // Đã xóa dấu hai chấm dư ở đây!
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
                 'Upgrade-Insecure-Requests': '1'
             }
         });
 
-        // Nếu không kết nối được, trả về mã lỗi cụ thể để debug
         if (!response.ok) {
             return res.status(response.status).json({ 
                 success: false, 
-                error: `Nimo TV từ chối kết nối (Mã lỗi: ${response.status})`,
-                note: response.status === 403 ? "IP của Vercel đã bị Nimo chặn (WAF/Cloudflare)." : "Kiểm tra lại Room ID."
+                error: `Nimo phản hồi lỗi ${response.status}` 
             });
         }
 
@@ -36,11 +33,7 @@ export default async function handler(req, res) {
         // Tìm G_roomBaseInfo
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         if (!jsonMatch) {
-            // Kiểm tra xem có dính trang Captcha không
-            if (html.includes('cf-challenge') || html.includes('captcha')) {
-                return res.status(403).json({ success: false, error: "Bị chặn bởi Cloudflare Captcha." });
-            }
-            return res.status(404).json({ success: false, error: "Không tìm thấy dữ liệu luồng trong HTML." });
+            return res.status(404).json({ success: false, error: "Không tìm thấy dữ liệu luồng. Có thể bị Cloudflare chặn." });
         }
 
         const data = JSON.parse(jsonMatch[1]);
@@ -49,14 +42,10 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: false, error: "Kênh đang Offline." });
         }
 
-        if (!data.mStreamPkg) {
-            return res.status(404).json({ success: false, error: "Thiếu gói mStreamPkg." });
-        }
-
-        // Giải mã Hex
+        // Giải mã mStreamPkg
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // Regex bóc tách
+        // Regex lấy tham số
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
@@ -65,15 +54,14 @@ export default async function handler(req, res) {
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
 
         if (!domainMatch || !id || !wsSecret) {
-            return res.status(500).json({ success: false, error: "Lỗi giải mã tham số.", debug: decodedPkg });
+            return res.status(500).json({ success: false, error: "Lỗi Regex.", debug: decodedPkg });
         }
 
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         const ratio = req.query.q === '720' ? '2500' : '6000';
         const needwm = ratio === '6000' ? '0' : '1';
-        const sphd = ratio === '6000' ? '' : '&sphd=1';
 
-        const flvUrl = `${domain}${id}.flv?appid=${appid}&id=${id}&tp=${tp}&wsSecret=${wsSecret}&wsTime=${wsTime}&u=0&t=100&needwm=${needwm}&ratio=${ratio}${sphd}`;
+        const flvUrl = `${domain}${id}.flv?appid=${appid}&id=${id}&tp=${tp}&wsSecret=${wsSecret}&wsTime=${wsTime}&u=0&t=100&needwm=${needwm}&ratio=${ratio}${ratio === '6000' ? '' : '&sphd=1'}`;
 
         return res.status(200).json({
             success: true,
@@ -83,6 +71,6 @@ export default async function handler(req, res) {
         });
 
     } catch (error) {
-        return res.status(500).json({ success: false, error: "Lỗi kết nối: " + error.message });
+        return res.status(500).json({ success: false, error: error.message });
     }
 }
