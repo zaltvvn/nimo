@@ -1,7 +1,8 @@
 export default async function handler(req, res) {
-    const roomId = req.query.id || '15476973';
+    // Lấy ID từ tham số ?id=... (Mặc định: 879386692)
+    const roomId = req.query.id || '879386692';
     
-    // Tự động xử lý ID số
+    // Tự động nhận diện ID là số hay chữ để tạo đường dẫn m.nimo.tv chuẩn
     let path = roomId;
     if (!isNaN(roomId) && !roomId.includes('/')) {
         path = `live/${roomId}`;
@@ -21,18 +22,18 @@ export default async function handler(req, res) {
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
         if (!jsonMatch) {
-            return res.status(404).send("Không tìm thấy dữ liệu stream.");
+            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
         }
 
         const data = JSON.parse(jsonMatch[1]);
         if (data.liveStreamStatus === 0) {
-            return res.status(200).send("Kênh hiện đang Offline.");
+            return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        // GIẢI MÃ MSTREAMPKG
+        // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // Bóc tách tham số
+        // BÓC TÁCH THAM SỐ
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
@@ -41,28 +42,47 @@ export default async function handler(req, res) {
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
 
         if (!domainMatch || !id || !wsSecret) {
-            return res.status(500).send("Lỗi giải mã thông số.");
+            return res.status(500).send("Lỗi giải mã tham số luồng.");
         }
 
+        // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // Chất lượng
+        // XỬ LÝ CHẤT LƯỢNG (Dùng ?q=720 để giảm buffering)
         const q = req.query.q || '1080';
-        let ratio = '6000';
+        let ratio = '6000'; // 1080p
         if (q === '720') ratio = '2500';
         if (q === '480') ratio = '1000';
         if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
 
-        // TẠO LINK FLV
-        const finalUrl = `${domain}${id}.flv?ver=1&wsSecret=${wsSecret}&wsTime=${wsTime}&ctype=nimo_media_web&appid=${appid}&tp=${tp}&needwm=${needwm}&ratio=${ratio}${ratio === '6000' ? '' : '&sphd=1'}&u=0&t=100`;
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
+        const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
+        const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
+        const now = Date.now();
 
-        // --- QUAN TRỌNG: CHUYỂN HƯỚNG TRỰC TIẾP ---
-        // Thay vì res.json, ta dùng res.redirect
+        // LẮP RÁP LINK .FLV HOÀN CHỈNH
+        const finalUrl = `${domain}${id}.flv?ver=1` +
+                         `&wsSecret=${wsSecret}` +
+                         `&wsTime=${wsTime}` +
+                         `&ctype=nimo_media_web` +
+                         `&appid=${appid}` +
+                         `&tp=${tp}` +
+                         `&needwm=${needwm}` +
+                         `&ratio=${ratio}` +
+                         (ratio === '6000' ? '' : '&sphd=1') +
+                         `&u=${u}` +
+                         `&t=100` +
+                         `&seqid=${seqid}` +
+                         `&sdk_sid=${now}` +
+                         `&a_block=0`;
+
+        // TRẢ VỀ VIDEO TRỰC TIẾP
+        res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
     } catch (error) {
-        res.status(500).send("Lỗi: " + error.message);
+        res.status(500).send("Lỗi hệ thống: " + error.message);
     }
 }
