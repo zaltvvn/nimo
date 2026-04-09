@@ -1,16 +1,15 @@
 export default async function handler(req, res) {
-    // Lấy ID từ tham số ?id=... (Mặc định: 879386692)
+    // 1. Lấy ID từ tham số
     const roomId = req.query.id || '879386692';
     
-    // Tự động nhận diện ID là số hay chữ để tạo đường dẫn m.nimo.tv chuẩn
     let path = roomId;
     if (!isNaN(roomId) && !roomId.includes('/')) {
         path = `live/${roomId}`;
     }
-    
     const url = `https://m.nimo.tv/${path}`;
 
     try {
+        // 2. Fetch mộc mạc (Giữ nguyên để không bị Vercel chặn 404)
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
@@ -21,11 +20,8 @@ export default async function handler(req, res) {
         const html = await response.text();
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
-        // --- MÁY BẮT LỖI ---
         if (!jsonMatch) {
-            // Nếu lỗi 404, nó sẽ in ra 500 ký tự đầu tiên của trang web để xem Nimo đang chặn cái gì
-            const htmlSnippet = html.substring(0, 500).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            return res.status(404).send(`<h3>Lỗi 404: Không tìm thấy dữ liệu.</h3><p>Nimo đã trả về nội dung sau (có thể bị chặn IP):</p><pre>${htmlSnippet}</pre>`);
+            return res.status(404).send("Lỗi Vercel: Không tìm thấy dữ liệu HTML gốc.");
         }
 
         const data = JSON.parse(jsonMatch[1]);
@@ -33,66 +29,49 @@ export default async function handler(req, res) {
             return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
+        // 3. GIẢI MÃ DỮ LIỆU
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ
-        const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
-        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
-        const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
-        const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
-        const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
-        const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
-
-        if (!domainMatch || !id || !wsSecret) {
-            return res.status(500).send("Lỗi giải mã tham số luồng.");
-        }
-
-        // Chuyển từ giao thức HLS sang FLV
-        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
+        // Bóc tách Domain và ID
+        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)/);
+        const idMatch = decodedPkg.match(/id=([^&|\\]+)/);
         
-        // ==========================================
-        // VÙNG SỬA ĐỔI: XỬ LÝ CHẤT LƯỢNG THÔNG MINH
-        // ==========================================
-        let defaultRatio = '2500'; // Mặc định 720p
-        const ratioMatch = decodedPkg.match(/ratio=(\d+)/);
-        if (ratioMatch) {
-            defaultRatio = ratioMatch[1]; // Bắt mức chất lượng Nimo đang cấp
+        // CỰC KỲ QUAN TRỌNG: Lấy TOÀN BỘ chuỗi tham số gốc của Nimo để giữ lại 'fm' (Fix lỗi 404 Tengine)
+        const parts = decodedPkg.split('?');
+        let queryString = parts.length > 1 ? parts[1] : "";
+
+        if (!domainMatch || !idMatch || !queryString) {
+            return res.status(500).send("Lỗi bóc tách chuỗi tham số.");
         }
 
-        const q = req.query.q; 
-        let ratio = defaultRatio; // Ưu tiên chất lượng từ Nimo, không ép 1080p nữa
+        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
+        let streamId = idMatch[1];
 
-        if (q === '1080') ratio = '6000';
-        else if (q === '720') ratio = '2500';
-        else if (q === '480') ratio = '1000';
-        else if (q === '360') ratio = '500';
+        // 4. CHẤT LƯỢNG THÔNG MINH (Mặc định ÉP về 720p để KHÔNG BỊ LAG)
+        const q = req.query.q || '720'; // Mặc định là 720p nếu người dùng không gõ ?q=
+        let newRatio = '2500'; 
+        if (q === '1080') newRatio = '6000';
+        else if (q === '480') newRatio = '1000';
+        else if (q === '360') newRatio = '500';
 
-        const needwm = ratio === '6000' ? '0' : '1';
-        // ==========================================
+        // Ghi đè chất lượng mới vào chuỗi gốc của Nimo
+        queryString = queryString.replace(/ratio=\d+/, `ratio=${newRatio}`);
+        
+        const needwm = newRatio === '6000' ? '0' : '1';
+        queryString = queryString.replace(/needwm=\d+/, `needwm=${needwm}`);
+        
+        if (newRatio !== '6000' && !queryString.includes('sphd=')) {
+            queryString += "&sphd=1";
+        }
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
-        const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
-        const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
-        const now = Date.now();
+        // 5. Thêm các tham số giả lập trình phát
+        const u = "17" + Math.floor(Math.random() * 10000000000);
+        const seqid = Date.now().toString() + Math.floor(Math.random() * 1000);
+        
+        // Lắp ráp link hoàn chỉnh (Bao gồm đuôi gốc chứa 'fm' + thông số player)
+        const finalUrl = `${domain}${streamId}.flv?${queryString}&ver=1&ctype=nimo_media_web&u=${u}&seqid=${seqid}&t=100&a_block=0`;
 
-        // LẮP RÁP LINK .FLV HOÀN CHỈNH
-        const finalUrl = `${domain}${id}.flv?ver=1` +
-                         `&wsSecret=${wsSecret}` +
-                         `&wsTime=${wsTime}` +
-                         `&ctype=nimo_media_web` +
-                         `&appid=${appid}` +
-                         `&tp=${tp}` +
-                         `&needwm=${needwm}` +
-                         `&ratio=${ratio}` +
-                         (ratio === '6000' ? '' : '&sphd=1') +
-                         `&u=${u}` +
-                         `&t=100` +
-                         `&seqid=${seqid}` +
-                         `&sdk_sid=${now}` +
-                         `&a_block=0`;
-
-        // TRẢ VỀ VIDEO TRỰC TIẾP
+        // 6. CHUYỂN HƯỚNG
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
