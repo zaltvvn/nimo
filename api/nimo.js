@@ -40,9 +40,6 @@ export default async function handler(req, res) {
         const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
-        
-        // --- ĐIỂM CHẠM PHẪU THUẬT: Lấy ratio gốc của luồng ---
-        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500';
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -51,14 +48,12 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // --- ĐIỂM CHẠM PHẪU THUẬT 2: Smart Quality ---
-        const q = req.query.q; 
-        let ratio = defaultRatio; // Ưu tiên chất lượng mặc định của Nimo để tránh Buffering
-
-        if (q === '1080') ratio = '6000';
-        else if (q === '720') ratio = '2500';
-        else if (q === '480') ratio = '1000';
-        else if (q === '360') ratio = '500';
+        // XỬ LÝ CHẤT LƯỢNG (Dùng ?q=720 để giảm buffering)
+        const q = req.query.q || '1080';
+        let ratio = '6000'; // 1080p
+        if (q === '720') ratio = '2500';
+        if (q === '480') ratio = '1000';
+        if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
 
