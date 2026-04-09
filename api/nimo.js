@@ -11,7 +11,6 @@ export default async function handler(req, res) {
     const url = `https://m.nimo.tv/${path}`;
 
     try {
-        // FETCH BẢN CŨ: Không chứa Header thừa để tránh bị WAF nghi ngờ (Fix 404)
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
@@ -20,12 +19,13 @@ export default async function handler(req, res) {
         });
 
         const html = await response.text();
-        
-        // REGEX BẢN CŨ: Bám sát thẻ script để bóc tách chính xác 100%
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
+        // --- MÁY BẮT LỖI ---
         if (!jsonMatch) {
-            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
+            // Nếu lỗi 404, nó sẽ in ra 500 ký tự đầu tiên của trang web để xem Nimo đang chặn cái gì
+            const htmlSnippet = html.substring(0, 500).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            return res.status(404).send(`<h3>Lỗi 404: Không tìm thấy dữ liệu.</h3><p>Nimo đã trả về nội dung sau (có thể bị chặn IP):</p><pre>${htmlSnippet}</pre>`);
         }
 
         const data = JSON.parse(jsonMatch[1]);
@@ -36,16 +36,13 @@ export default async function handler(req, res) {
         // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ GỐC
+        // BÓC TÁCH THAM SỐ
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
         const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
-        
-        // SMART QUALITY: Lấy ratio gốc do Nimo cấp để xem mượt, không bị xoay vòng
-        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500'; 
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -54,9 +51,17 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // XỬ LÝ CHẤT LƯỢNG THÔNG MINH
+        // ==========================================
+        // VÙNG SỬA ĐỔI: XỬ LÝ CHẤT LƯỢNG THÔNG MINH
+        // ==========================================
+        let defaultRatio = '2500'; // Mặc định 720p
+        const ratioMatch = decodedPkg.match(/ratio=(\d+)/);
+        if (ratioMatch) {
+            defaultRatio = ratioMatch[1]; // Bắt mức chất lượng Nimo đang cấp
+        }
+
         const q = req.query.q; 
-        let ratio = defaultRatio; // Mặc định không ép FHD nữa
+        let ratio = defaultRatio; // Ưu tiên chất lượng từ Nimo, không ép 1080p nữa
 
         if (q === '1080') ratio = '6000';
         else if (q === '720') ratio = '2500';
@@ -64,8 +69,9 @@ export default async function handler(req, res) {
         else if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
+        // ==========================================
 
-        // TẠO THAM SỐ GIẢ LẬP
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
         const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
         const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
         const now = Date.now();
@@ -86,7 +92,7 @@ export default async function handler(req, res) {
                          `&sdk_sid=${now}` +
                          `&a_block=0`;
 
-        // CHUYỂN HƯỚNG TRỰC TIẾP TỚI POTPLAYER / TRÌNH PHÁT
+        // TRẢ VỀ VIDEO TRỰC TIẾP
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
