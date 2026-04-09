@@ -11,7 +11,7 @@ export default async function handler(req, res) {
     const url = `https://m.nimo.tv/${path}`;
 
     try {
-        // FETCH BẢN CŨ: Mộc mạc, không Referer, không làm hệ thống chống Bot nghi ngờ
+        // FETCH BẢN CŨ: Không chứa Header thừa để tránh bị WAF nghi ngờ (Fix 404)
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
 
         const html = await response.text();
         
-        // REGEX BẢN CŨ: Bám chặt thẻ script để không văng 404
+        // REGEX BẢN CŨ: Bám sát thẻ script để bóc tách chính xác 100%
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
         if (!jsonMatch) {
@@ -44,8 +44,8 @@ export default async function handler(req, res) {
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
         
-        // LẤY CHẤT LƯỢNG GỐC CỦA NIMO (Để tránh ép FHD gây giật lag)
-        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500';
+        // SMART QUALITY: Lấy ratio gốc do Nimo cấp để xem mượt, không bị xoay vòng
+        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500'; 
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -55,8 +55,8 @@ export default async function handler(req, res) {
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
         // XỬ LÝ CHẤT LƯỢNG THÔNG MINH
-        const q = req.query.q;
-        let ratio = defaultRatio; // Mặc định lấy luồng Nimo đề xuất (Thường là 720p)
+        const q = req.query.q; 
+        let ratio = defaultRatio; // Mặc định không ép FHD nữa
 
         if (q === '1080') ratio = '6000';
         else if (q === '720') ratio = '2500';
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
                          `&sdk_sid=${now}` +
                          `&a_block=0`;
 
-        // CHUYỂN HƯỚNG TRỰC TIẾP TỚI VIDEO
+        // CHUYỂN HƯỚNG TRỰC TIẾP TỚI POTPLAYER / TRÌNH PHÁT
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
