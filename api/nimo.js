@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-    // 1. Lấy ID từ tham số
     const roomId = req.query.id || '879386692';
     
     let path = roomId;
@@ -9,7 +8,6 @@ export default async function handler(req, res) {
     const url = `https://m.nimo.tv/${path}`;
 
     try {
-        // 2. Fetch mộc mạc (Giữ nguyên để không bị Vercel chặn 404)
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
@@ -21,7 +19,7 @@ export default async function handler(req, res) {
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         
         if (!jsonMatch) {
-            return res.status(404).send("Lỗi Vercel: Không tìm thấy dữ liệu HTML gốc.");
+            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
         }
 
         const data = JSON.parse(jsonMatch[1]);
@@ -29,14 +27,12 @@ export default async function handler(req, res) {
             return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        // 3. GIẢI MÃ DỮ LIỆU
+        // GIẢI MÃ DỮ LIỆU
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // Bóc tách Domain và ID
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)/);
         const idMatch = decodedPkg.match(/id=([^&|\\]+)/);
         
-        // CỰC KỲ QUAN TRỌNG: Lấy TOÀN BỘ chuỗi tham số gốc của Nimo để giữ lại 'fm' (Fix lỗi 404 Tengine)
         const parts = decodedPkg.split('?');
         let queryString = parts.length > 1 ? parts[1] : "";
 
@@ -47,16 +43,14 @@ export default async function handler(req, res) {
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         let streamId = idMatch[1];
 
-        // 4. CHẤT LƯỢNG THÔNG MINH (Mặc định ÉP về 720p để KHÔNG BỊ LAG)
-        const q = req.query.q || '720'; // Mặc định là 720p nếu người dùng không gõ ?q=
+        // CHẤT LƯỢNG THÔNG MINH
+        const q = req.query.q || '720'; 
         let newRatio = '2500'; 
         if (q === '1080') newRatio = '6000';
         else if (q === '480') newRatio = '1000';
         else if (q === '360') newRatio = '500';
 
-        // Ghi đè chất lượng mới vào chuỗi gốc của Nimo
         queryString = queryString.replace(/ratio=\d+/, `ratio=${newRatio}`);
-        
         const needwm = newRatio === '6000' ? '0' : '1';
         queryString = queryString.replace(/needwm=\d+/, `needwm=${needwm}`);
         
@@ -64,14 +58,18 @@ export default async function handler(req, res) {
             queryString += "&sphd=1";
         }
 
-        // 5. Thêm các tham số giả lập trình phát
         const u = "17" + Math.floor(Math.random() * 10000000000);
         const seqid = Date.now().toString() + Math.floor(Math.random() * 1000);
         
-        // Lắp ráp link hoàn chỉnh (Bao gồm đuôi gốc chứa 'fm' + thông số player)
-        const finalUrl = `${domain}${streamId}.flv?${queryString}&ver=1&ctype=nimo_media_web&u=${u}&seqid=${seqid}&t=100&a_block=0`;
+        // Lắp ráp link thô
+        let finalUrl = `${domain}${streamId}.flv?${queryString}&ver=1&ctype=nimo_media_web&u=${u}&seqid=${seqid}&t=100&a_block=0`;
 
-        // 6. CHUYỂN HƯỚNG
+        // ==========================================
+        // BỘ LỌC KÝ TỰ RÁC (FIX LỖI HEADER LOCATION)
+        // Loại bỏ toàn bộ khoảng trắng, dấu xuống dòng, và ký tự null
+        // ==========================================
+        finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
+
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
