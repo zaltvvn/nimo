@@ -33,7 +33,7 @@ export default async function handler(req, res) {
         // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ GỐC
+        // BÓC TÁCH THAM SỐ
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
@@ -41,8 +41,8 @@ export default async function handler(req, res) {
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
         
-        // --- THÊM MỚI: Lấy ratio gốc mà Nimo đang cấp ---
-        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500'; // Thường là 2500 (720p)
+        // --- ĐIỂM CHẠM PHẪU THUẬT: Lấy ratio gốc của luồng ---
+        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500';
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -51,11 +51,10 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // --- SỬA ĐỔI: XỬ LÝ CHẤT LƯỢNG THÔNG MINH ---
+        // --- ĐIỂM CHẠM PHẪU THUẬT 2: Smart Quality ---
         const q = req.query.q; 
-        let ratio = defaultRatio; // Mặc định dùng luồng của Nimo cấp (Không ép FHD nữa)
+        let ratio = defaultRatio; // Ưu tiên chất lượng mặc định của Nimo để tránh Buffering
 
-        // Nếu người dùng chủ động yêu cầu chất lượng
         if (q === '1080') ratio = '6000';
         else if (q === '720') ratio = '2500';
         else if (q === '480') ratio = '1000';
@@ -63,7 +62,7 @@ export default async function handler(req, res) {
 
         const needwm = ratio === '6000' ? '0' : '1';
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
         const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
         const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
         const now = Date.now();
@@ -76,7 +75,7 @@ export default async function handler(req, res) {
                          `&appid=${appid}` +
                          `&tp=${tp}` +
                          `&needwm=${needwm}` +
-                         `&ratio=${ratio}` + // Dùng ratio thông minh
+                         `&ratio=${ratio}` +
                          (ratio === '6000' ? '' : '&sphd=1') +
                          `&u=${u}` +
                          `&t=100` +
