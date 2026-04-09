@@ -33,13 +33,16 @@ export default async function handler(req, res) {
         // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ
+        // BÓC TÁCH THAM SỐ GỐC
         const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
         const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
+        
+        // --- THÊM MỚI: Lấy ratio gốc mà Nimo đang cấp ---
+        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500'; // Thường là 2500 (720p)
 
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
@@ -48,16 +51,19 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // XỬ LÝ CHẤT LƯỢNG (Dùng ?q=720 để giảm buffering)
-        const q = req.query.q || '1080';
-        let ratio = '6000'; // 1080p
-        if (q === '720') ratio = '2500';
-        if (q === '480') ratio = '1000';
-        if (q === '360') ratio = '500';
+        // --- SỬA ĐỔI: XỬ LÝ CHẤT LƯỢNG THÔNG MINH ---
+        const q = req.query.q; 
+        let ratio = defaultRatio; // Mặc định dùng luồng của Nimo cấp (Không ép FHD nữa)
+
+        // Nếu người dùng chủ động yêu cầu chất lượng
+        if (q === '1080') ratio = '6000';
+        else if (q === '720') ratio = '2500';
+        else if (q === '480') ratio = '1000';
+        else if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
         const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
         const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
         const now = Date.now();
@@ -70,7 +76,7 @@ export default async function handler(req, res) {
                          `&appid=${appid}` +
                          `&tp=${tp}` +
                          `&needwm=${needwm}` +
-                         `&ratio=${ratio}` +
+                         `&ratio=${ratio}` + // Dùng ratio thông minh
                          (ratio === '6000' ? '' : '&sphd=1') +
                          `&u=${u}` +
                          `&t=100` +
