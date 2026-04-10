@@ -1,13 +1,11 @@
 export default async function handler(req, res) {
-    // Lấy ID từ tham số ?id=... (Mặc định: 879386692)
     const roomId = req.query.id || '879386692';
     
-    // Tự động nhận diện ID là số hay chữ để tạo đường dẫn m.nimo.tv chuẩn
+    // Logic của bạn: Tự động thêm /live cho ID số
     let path = roomId;
     if (!isNaN(roomId) && !roomId.includes('/')) {
         path = `live/${roomId}`;
     }
-    
     const url = `https://m.nimo.tv/${path}`;
 
     try {
@@ -30,31 +28,30 @@ export default async function handler(req, res) {
             return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
         const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
 
-        // BÓC TÁCH THAM SỐ (Giữ nguyên của bạn, bổ sung bắt chữ ký fm)
-        const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
+        // BÓC TÁCH (Sử dụng 100% logic của Streamlink Python)
+        const appidMatch = decodedPkg.match(/appid=(\d+)/);
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
-        const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
-        const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
-        const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
-        const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
-        
-        // Bắt thêm chữ ký fm để chống lỗi 404 Tengine
-        const fmMatch = decodedPkg.match(/fm=([^&|\\]+)/);
-        const fmString = fmMatch ? `&fm=${fmMatch[1]}` : '';
+        const idMatch = decodedPkg.match(/id=([^|\\]+)/);
+        const tpMatch = decodedPkg.match(/tp=(\d+)/);
+        const wsSecretMatch = decodedPkg.match(/wsSecret=(\w+)/);
+        const wsTimeMatch = decodedPkg.match(/wsTime=(\w+)/);
 
-        if (!domainMatch || !id || !wsSecret) {
+        if (!domainMatch || !idMatch || !wsSecretMatch) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
         }
 
-        // Chuyển từ giao thức HLS sang FLV
+        const appid = appidMatch ? appidMatch[1] : '81';
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
-        
-        // --- SỬA LỖI ÉP CHẤT LƯỢNG (Chống Buffering) ---
+        const id = idMatch[1];
+        const tp = tpMatch ? tpMatch[1] : '';
+        const wsSecret = wsSecretMatch[1];
+        const wsTime = wsTimeMatch[1];
+
+        // XỬ LÝ CHẤT LƯỢNG THÔNG MINH (Không bị ép lag)
         const ratioMatch = decodedPkg.match(/ratio=(\d+)/);
-        let ratio = ratioMatch ? ratioMatch[1] : '2500'; // Mặc định lấy luồng Nimo cấp
+        let ratio = ratioMatch ? ratioMatch[1] : '2500';
 
         if (req.query.q) {
             const q = req.query.q;
@@ -67,32 +64,12 @@ export default async function handler(req, res) {
         const needwm = ratio === '6000' ? '0' : '1';
         const sphd = ratio !== '6000' ? '&sphd=1' : '';
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
-        const u = "0"; // Dùng 0 ổn định hơn random
-        const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
-        const now = Date.now();
+        // LẮP RÁP LINK (Chuẩn Streamlink: u=0, t=100, tuyệt đối KHÔNG có fm)
+        let finalUrl = `${domain}${id}.flv?appid=${appid}&id=${id}&tp=${tp}&wsSecret=${wsSecret}&wsTime=${wsTime}&u=0&t=100&needwm=${needwm}&ratio=${ratio}${sphd}`;
 
-        // LẮP RÁP LINK .FLV HOÀN CHỈNH
-        let finalUrl = `${domain}${id}.flv?ver=1` +
-                         `&wsSecret=${wsSecret}` +
-                         `&wsTime=${wsTime}` +
-                         fmString +
-                         `&ctype=nimo_media_web` +
-                         `&appid=${appid}` +
-                         `&tp=${tp}` +
-                         `&needwm=${needwm}` +
-                         `&ratio=${ratio}` +
-                         sphd +
-                         `&u=${u}` +
-                         `&t=100` +
-                         `&seqid=${seqid}` +
-                         `&sdk_sid=${now}` +
-                         `&a_block=0`;
-
-        // --- DỌN RÁC LINK CHỐNG SẬP VERCEL ---
+        // Dọn rác byte ẩn
         finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
 
-        // TRẢ VỀ VIDEO TRỰC TIẾP
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
