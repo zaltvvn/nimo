@@ -85,8 +85,8 @@ export default async function handler(req, res) {
         const streamRes = await fetch(streamUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36 Edg/146.0.0.0',
-                'Referer':    'https://www.nimo.tv/',
-                'Origin':     'https://www.nimo.tv',
+                'Referer':    'https://m.nimo.tv/',
+                'Origin':     'https://m.nimo.tv/',
                 'Accept':     '*/*',
                 ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
             }
