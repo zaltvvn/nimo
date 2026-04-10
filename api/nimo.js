@@ -54,9 +54,9 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const { username } = req.query;
+  const username = req.query.username || req.query.id;
   if (!username) {
-    return res.status(400).json({ error: "Missing ?username= query parameter" });
+    return res.status(400).json({ error: "Missing ?username= or ?id= query parameter" });
   }
 
   const pageUrl = `https://m.nimo.tv/${encodeURIComponent(username)}`;
