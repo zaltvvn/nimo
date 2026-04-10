@@ -41,9 +41,6 @@ export default async function handler(req, res) {
         const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
         const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
 
-        // 🟢 ĐIỂM CHẠM 1: Bắt tỷ lệ gốc do Nimo cấp
-        const defaultRatio = decodedPkg.match(/ratio=(\d+)/)?.[1] || '2500';
-
         if (!domainMatch || !id || !wsSecret) {
             return res.status(500).send("Lỗi giải mã tham số luồng.");
         }
@@ -51,24 +48,22 @@ export default async function handler(req, res) {
         // Chuyển từ giao thức HLS sang FLV
         let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
         
-        // 🟢 ĐIỂM CHẠM 2: Sửa logic chất lượng (Không ép FHD nữa)
-        const q = req.query.q; 
-        let ratio = defaultRatio; // Mặc định lấy luồng gốc (Thường là 720p - cực mượt)
-
-        if (q === '1080') ratio = '6000';
-        else if (q === '720') ratio = '2500';
-        else if (q === '480') ratio = '1000';
-        else if (q === '360') ratio = '500';
+        // XỬ LÝ CHẤT LƯỢNG (Dùng ?q=720 để giảm buffering)
+        const q = req.query.q || '1080';
+        let ratio = '6000'; // 1080p
+        if (q === '720') ratio = '2500';
+        if (q === '480') ratio = '1000';
+        if (q === '360') ratio = '500';
 
         const needwm = ratio === '6000' ? '0' : '1';
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT (Fix Buffering)
         const u = Math.floor(Math.random() * 1000000000000) + 1700000000000;
         const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
         const now = Date.now();
 
         // LẮP RÁP LINK .FLV HOÀN CHỈNH
-        let finalUrl = `${domain}${id}.flv?ver=1` +
+        const finalUrl = `${domain}${id}.flv?ver=1` +
                          `&wsSecret=${wsSecret}` +
                          `&wsTime=${wsTime}` +
                          `&ctype=nimo_media_web` +
@@ -82,9 +77,6 @@ export default async function handler(req, res) {
                          `&seqid=${seqid}` +
                          `&sdk_sid=${now}` +
                          `&a_block=0`;
-
-        // 🟢 ĐIỂM CHẠM 3: Hút sạch ký tự ẩn rác để chống sập Vercel (Lỗi Invalid header)
-        finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
 
         // TRẢ VỀ VIDEO TRỰC TIẾP
         res.setHeader('Cache-Control', 'no-cache');
