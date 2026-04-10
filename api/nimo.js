@@ -1,10 +1,8 @@
 export default async function handler(req, res) {
-    // 1. Nhận ID
+    // Lấy ID từ tham số ?id=... (Mặc định: 879386692)
     const roomId = req.query.id || '879386692';
     
-    // ==========================================
-    // PHỤC HỒI LOGIC CỦA BẠN: Tự nhận diện ID Số (Fix lỗi 404 Nimo)
-    // ==========================================
+    // Tự động nhận diện ID là số hay chữ để tạo đường dẫn m.nimo.tv chuẩn
     let path = roomId;
     if (!isNaN(roomId) && !roomId.includes('/')) {
         path = `live/${roomId}`;
@@ -15,55 +13,48 @@ export default async function handler(req, res) {
     try {
         const response = await fetch(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
+                'Accept-Encoding': 'gzip, deflate, br'
             }
         });
 
         const html = await response.text();
-        
-        // 2. Bắt HTML
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
+        
         if (!jsonMatch) {
-            return res.status(404).send(`Stream Offline / Lỗi bóc tách HTML. Đã thử tìm tại URL: ${url}`);
+            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
         }
 
         const data = JSON.parse(jsonMatch[1]);
         if (data.liveStreamStatus === 0) {
-            return res.status(200).send("Stream hiện đang Offline");
+            return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        const mStreamPkg = data.mStreamPkg;
-        if (!mStreamPkg) {
-            return res.status(500).send("Không tìm thấy mStreamPkg");
+        // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
+        const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
+
+        // BÓC TÁCH THAM SỐ (Giữ nguyên của bạn, bổ sung bắt chữ ký fm)
+        const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
+        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
+        const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
+        const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
+        const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
+        const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
+        
+        // Bắt thêm chữ ký fm để chống lỗi 404 Tengine
+        const fmMatch = decodedPkg.match(/fm=([^&|\\]+)/);
+        const fmString = fmMatch ? `&fm=${fmMatch[1]}` : '';
+
+        if (!domainMatch || !id || !wsSecret) {
+            return res.status(500).send("Lỗi giải mã tham số luồng.");
         }
 
-        const decodedPkg = Buffer.from(mStreamPkg, 'hex').toString('utf-8');
-
-        // 3. Giải mã 100% chuẩn Streamlink
-        const appidMatch = decodedPkg.match(/appid=(\d+)/);
-        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
-        const idMatch = decodedPkg.match(/id=([^|\\]+)/);
-        const tpMatch = decodedPkg.match(/tp=(\d+)/);
-        const wsSecretMatch = decodedPkg.match(/wsSecret=(\w+)/);
-        const wsTimeMatch = decodedPkg.match(/wsTime=(\w+)/);
-
-        if (!domainMatch || !idMatch || !wsSecretMatch) {
-            return res.status(500).send("Lỗi: Regex Streamlink không bắt được dữ liệu.");
-        }
-
-        const appid = appidMatch ? appidMatch[1] : '81';
-        let domain = domainMatch[1];
-        const id_ = idMatch[1];
-        const tp = tpMatch ? tpMatch[1] : '';
-        const wsSecret = wsSecretMatch[1];
-        const wsTime = wsTimeMatch[1];
-
-        // HLS sang FLV
-        domain = domain.replace('hls.nimo.tv', 'flv.nimo.tv');
-
-        // 4. Chất lượng thông minh
+        // Chuyển từ giao thức HLS sang FLV
+        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
+        
+        // --- SỬA LỖI ÉP CHẤT LƯỢNG (Chống Buffering) ---
         const ratioMatch = decodedPkg.match(/ratio=(\d+)/);
-        let ratio = ratioMatch ? ratioMatch[1] : '2500';
+        let ratio = ratioMatch ? ratioMatch[1] : '2500'; // Mặc định lấy luồng Nimo cấp
 
         if (req.query.q) {
             const q = req.query.q;
@@ -73,15 +64,35 @@ export default async function handler(req, res) {
             else if (q === '360') ratio = '500';
         }
 
-        let needwm = (ratio === '6000') ? '0' : '1';
-        let sphd = (ratio !== '6000') ? '&sphd=1' : '';
+        const needwm = ratio === '6000' ? '0' : '1';
+        const sphd = ratio !== '6000' ? '&sphd=1' : '';
 
-        // 5. Ráp link
-        let finalUrl = `${domain}${id_}.flv?appid=${appid}&id=${id_}&tp=${tp}&wsSecret=${wsSecret}&wsTime=${wsTime}&u=0&t=100&needwm=${needwm}&ratio=${ratio}${sphd}`;
+        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
+        const u = "0"; // Dùng 0 ổn định hơn random
+        const seqid = Math.floor(Math.random() * 4000000000000) + 3000000000000;
+        const now = Date.now();
 
-        // Quét ký tự rác chống sập Vercel
+        // LẮP RÁP LINK .FLV HOÀN CHỈNH
+        let finalUrl = `${domain}${id}.flv?ver=1` +
+                         `&wsSecret=${wsSecret}` +
+                         `&wsTime=${wsTime}` +
+                         fmString +
+                         `&ctype=nimo_media_web` +
+                         `&appid=${appid}` +
+                         `&tp=${tp}` +
+                         `&needwm=${needwm}` +
+                         `&ratio=${ratio}` +
+                         sphd +
+                         `&u=${u}` +
+                         `&t=100` +
+                         `&seqid=${seqid}` +
+                         `&sdk_sid=${now}` +
+                         `&a_block=0`;
+
+        // --- DỌN RÁC LINK CHỐNG SẬP VERCEL ---
         finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
 
+        // TRẢ VỀ VIDEO TRỰC TIẾP
         res.setHeader('Cache-Control', 'no-cache');
         res.redirect(302, finalUrl);
 
