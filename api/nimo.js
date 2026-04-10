@@ -1,122 +1,113 @@
 export default async function handler(req, res) {
     const roomId = req.query.id || '879386692';
-    
+
     let path = roomId;
     if (!isNaN(roomId) && !roomId.includes('/')) {
         path = `live/${roomId}`;
     }
-    
+
     const url = `https://m.nimo.tv/${path}`;
+
+    // Map đúng theo Streamlink gốc
+    const VIDEO_QUALITIES = [
+        { ratio: 6000, label: '1080p', needwm: 0, sphd: false },
+        { ratio: 2500, label: '720p',  needwm: 1, sphd: true  },
+        { ratio: 1000, label: '480p',  needwm: 1, sphd: true  },
+        { ratio: 500,  label: '360p',  needwm: 1, sphd: true  },
+        { ratio: 250,  label: '240p',  needwm: 1, sphd: false },
+    ];
 
     try {
         const response = await fetch(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-                'Accept-Encoding': 'gzip, deflate, br'
+                // Dùng đúng Android UA như Streamlink
+                'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 12; Android SDK built for arm64 Build/SE1A.220630.001)',
             }
         });
 
         const html = await response.text();
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
-        
+
         if (!jsonMatch) {
-            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
+            return res.status(404).send("Không tìm thấy dữ liệu phòng.");
         }
 
         const data = JSON.parse(jsonMatch[1]);
+
         if (data.liveStreamStatus === 0) {
-            return res.status(200).send("Stream hiện đang Offline.");
+            return res.status(200).send("Stream đang Offline.");
         }
 
-        // GIẢI MÃ MSTREAMPKG (HEX TO STRING)
-        const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
-
-        // BÓC TÁCH THAM SỐ CƠ BẢN
-        const appid = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
-        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
-        const id = decodedPkg.match(/id=([^|\\]+)/)?.[1];
-        const tp = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
-        const wsSecret = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
-        const wsTime = decodedPkg.match(/wsTime=(\w+)/)?.[1];
-
-        if (!domainMatch || !id || !wsSecret) {
-            return res.status(500).send("Lỗi giải mã tham số luồng.");
+        if (!data.mStreamPkg) {
+            return res.status(404).send("Thiếu mStreamPkg.");
         }
 
-        // TỰ NHẬN DIỆN CÁC CHẤT LƯỢNG CÓ SẴN TỪ STREAM PKG
-        // Nimo thường nhúng danh sách ratio dạng: ratio=6000|2500|1000|500
-        const ratioListMatch = decodedPkg.match(/ratio=([\d|]+)/);
-        const availableRatios = ratioListMatch
-            ? ratioListMatch[1].split('|').map(Number).filter(Boolean).sort((a, b) => b - a)
-            : null;
+        // Decode hex → bytes → string (giống bytes.fromhex() trong Python)
+        const pkg = Buffer.from(data.mStreamPkg, 'hex');
 
-        // MAP ratio → label để debug / info
-        const RATIO_LABEL = {
-            6000: '1080p', 4000: '1080p', 3000: '720p',
-            2500: '720p',  1500: '480p',  1000: '480p',
-            500:  '360p',  300:  '360p'
+        const appid     = pkg.toString().match(/appid=(\d+)/)?.[1];
+        const domainRaw = pkg.toString().match(/(https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z.\/]+)(?:V|&)/)?.[1];
+        const id_       = pkg.toString().match(/id=([^|\\]+)/)?.[1];
+        const tp        = pkg.toString().match(/tp=(\d+)/)?.[1];
+        const wsSecret  = pkg.toString().match(/wsSecret=(\w+)/)?.[1];
+        const wsTime    = pkg.toString().match(/wsTime=(\w+)/)?.[1];
+
+        if (!appid || !domainRaw || !id_ || !tp || !wsSecret || !wsTime) {
+            return res.status(500).send("Lỗi giải mã mStreamPkg.");
+        }
+
+        // Chuyển HLS → FLV domain
+        const domain   = domainRaw.replace('hls.nimo.tv', 'flv.nimo.tv');
+        const streamUrl = `${domain}${id_}.flv`;
+
+        // Nếu ?q= được truyền → redirect thẳng 1 chất lượng
+        // Nếu không → trả JSON danh sách tất cả quality (để client tự chọn)
+        const qParam = req.query.q; // '1080' | '720' | '480' | '360' | '240'
+
+        const Q_MAP = {
+            '1080': 6000, '720': 2500,
+            '480': 1000, '360': 500, '240': 250,
         };
 
-        // XỬ LÝ THAM SỐ ?q= (tuỳ chọn ép chất lượng cụ thể)
-        const qParam = req.query.q; // '1080' | '720' | '480' | '360' | undefined
-
-        const Q_TO_RATIO = {
-            '1080': [6000, 4000],
-            '720':  [3000, 2500],
-            '480':  [1500, 1000],
-            '360':  [500,  300],
+        const buildParams = (q) => {
+            // Đúng theo Streamlink gốc: u=0, t=100, không có seqid/sdk_sid/a_block/ctype
+            const p = new URLSearchParams({
+                appid,
+                id: id_,
+                tp,
+                wsSecret,
+                wsTime,
+                u: '0',       // cố định 0 như bản gốc
+                t: '100',
+                needwm: String(q.needwm),
+                ratio: String(q.ratio),
+            });
+            if (q.sphd) p.set('sphd', '1');
+            return p.toString();
         };
 
-        let selectedRatio;
-
-        if (qParam && Q_TO_RATIO[qParam]) {
-            // Người dùng yêu cầu chất lượng cụ thể → tìm ratio gần nhất có sẵn
-            const preferred = Q_TO_RATIO[qParam];
-            if (availableRatios) {
-                selectedRatio = preferred.find(r => availableRatios.includes(r))
-                             ?? availableRatios[0]; // fallback → cao nhất
-            } else {
-                selectedRatio = preferred[0];
-            }
-        } else {
-            // Không truyền ?q= → tự chọn cao nhất có sẵn
-            selectedRatio = availableRatios ? availableRatios[0] : 6000;
+        if (qParam && Q_MAP[qParam]) {
+            // Redirect thẳng vào quality được chọn
+            const q = VIDEO_QUALITIES.find(v => v.ratio === Q_MAP[qParam]) || VIDEO_QUALITIES[0];
+            const finalUrl = `${streamUrl}?${buildParams(q)}`;
+            res.setHeader('Cache-Control', 'no-cache');
+            return res.redirect(302, finalUrl);
         }
 
-        const needwm  = selectedRatio >= 4000 ? '0' : '1';
-        const isLower = selectedRatio < 4000;
+        // Không truyền ?q= → trả JSON tất cả quality để client chọn
+        const qualities = VIDEO_QUALITIES.map(q => ({
+            label: q.label,
+            url: `${streamUrl}?${buildParams(q)}`,
+        }));
 
-        // Chuyển từ HLS → FLV domain
-        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
+        return res.status(200).json({
+            title:    data.title    || '',
+            author:   data.nickname || '',
+            category: data.game     || '',
+            qualities,              // client chọn quality rồi play trực tiếp
+        });
 
-        // TẠO THAM SỐ GIẢ LẬP NGƯỜI DÙNG THẬT
-        const u      = Math.floor(Math.random() * 1000000000000) + 1700000000000;
-        const seqid  = Math.floor(Math.random() * 4000000000000) + 3000000000000;
-        const now    = Date.now();
-
-        // LẮP RÁP LINK .FLV HOÀN CHỈNH
-        const finalUrl = `${domain}${id}.flv?ver=1` +
-                         `&wsSecret=${wsSecret}` +
-                         `&wsTime=${wsTime}` +
-                         `&ctype=nimo_media_web` +
-                         `&appid=${appid}` +
-                         `&tp=${tp}` +
-                         `&needwm=${needwm}` +
-                         `&ratio=${selectedRatio}` +
-                         (isLower ? '&sphd=1' : '') +
-                         `&u=${u}` +
-                         `&t=100` +
-                         `&seqid=${seqid}` +
-                         `&sdk_sid=${now}` +
-                         `&a_block=0`;
-
-        // Header debug (xem chất lượng được chọn)
-        res.setHeader('X-Stream-Quality', RATIO_LABEL[selectedRatio] ?? `${selectedRatio}kbps`);
-        res.setHeader('X-Available-Ratios', availableRatios ? availableRatios.join('|') : 'unknown');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.redirect(302, finalUrl);
-
-    } catch (error) {
-        res.status(500).send("Lỗi hệ thống: " + error.message);
+    } catch (err) {
+        res.status(500).send("Lỗi hệ thống: " + err.message);
     }
 }
