@@ -1,97 +1,117 @@
-export default async function handler(req, res) {
-    const roomId = req.query.id || '879386692';
-    
-    // Tự động nhận diện ID số thêm /live
-    let path = roomId;
-    if (!isNaN(roomId) && !roomId.includes('/')) {
-        path = `live/${roomId}`;
-    }
-    const url = `https://m.nimo.tv/${path}`;
+/**
+ * NimoTV Stream API
+ * Vercel Serverless Function
+ * GET /api/nimo?username=<username|id>
+ * GET /api/nimo?id=<numeric_id>
+ *
+ * Returns a single "auto" stream URL — no ratio param, server picks quality.
+ */
 
+const ANDROID_UA =
+  "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36";
+
+const RE_APPID    = /appid=(\d+)/;
+const RE_DOMAIN   = /https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z.\/]+(?=V|&)/;
+const RE_ID       = /id=([^|\\]+)/;
+const RE_TP       = /tp=(\d+)/;
+const RE_WSSECRET = /wsSecret=(\w+)/;
+const RE_WSTIME   = /wsTime=(\w+)/;
+const RE_ROOM     = /<script>var G_roomBaseInfo = ({.*?});<\/script>/s;
+
+function hexToLatin1(hexStr) {
+  return Buffer.from(hexStr, "hex").toString("latin1");
+}
+
+function extractGroup(regex, text, group = 1) {
+  const m = regex.exec(text);
+  if (!m) throw new Error(`Pattern not found: ${regex}`);
+  return m[group];
+}
+
+async function fetchPage(username) {
+  const isNumeric = /^\d+$/.test(username);
+  const candidates = isNumeric
+    ? [`https://m.nimo.tv/live/${username}`, `https://m.nimo.tv/${username}`]
+    : [`https://m.nimo.tv/${username}`];
+
+  let lastError = "unknown error";
+  for (const url of candidates) {
     try {
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
-                'Accept-Encoding': 'gzip, deflate, br'
-            }
-        });
-
-        const html = await response.text();
-        const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
-        
-        if (!jsonMatch) {
-            return res.status(404).send("Lỗi: Không tìm thấy dữ liệu phòng.");
-        }
-
-        const data = JSON.parse(jsonMatch[1]);
-        if (data.liveStreamStatus === 0) {
-            return res.status(200).send("Stream hiện đang Offline.");
-        }
-
-        // GIẢI MÃ
-        const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
-
-        // BÓC TÁCH DOMAIN VÀ ID
-        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)/);
-        const idMatch = decodedPkg.match(/id=([A-Za-z0-9_-]+)/);
-
-        if (!domainMatch || !idMatch) {
-            return res.status(500).send("Lỗi bóc tách Domain/ID.");
-        }
-
-        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
-        let id = idMatch[1];
-
-        // 🟢 TUYỆT CHIÊU HÚT TRỌN Ổ (Bảo tồn 100% chữ ký fm và wsSecret)
-        // Kéo dài lấy trọn vẹn chuỗi URL sạch, tự động dừng khi gặp ký tự rác nhị phân
-        const queryMatch = decodedPkg.match(/(wsSecret=[A-Za-z0-9=&%_+\-/]+)/);
-        
-        if (!queryMatch) {
-            return res.status(500).send("Lỗi: Không tìm thấy bộ tham số bảo mật của Nimo.");
-        }
-
-        let queryParams = queryMatch[1]; 
-        // Lúc này queryParams đã ôm trọn: wsSecret=...&wsTime=...&fm=...&ctype=...&ratio=...
-
-        // 🟢 ĐỔI CHẤT LƯỢNG (Chỉ đổi nếu bạn truyền ?q= vào URL)
-        if (req.query.q) {
-            const q = req.query.q;
-            let newRatio = '2500';
-            if (q === '1080') newRatio = '6000';
-            else if (q === '720') newRatio = '2500';
-            else if (q === '480') newRatio = '1000';
-            else if (q === '360') newRatio = '500';
-
-            let newNeedwm = newRatio === '6000' ? '0' : '1';
-
-            // Ghi đè vào chuỗi zin
-            if (queryParams.includes('ratio=')) {
-                queryParams = queryParams.replace(/ratio=\d+/, `ratio=${newRatio}`);
-            } else {
-                queryParams += `&ratio=${newRatio}`;
-            }
-
-            if (queryParams.includes('needwm=')) {
-                queryParams = queryParams.replace(/needwm=\d+/, `needwm=${newNeedwm}`);
-            } else {
-                queryParams += `&needwm=${newNeedwm}`;
-            }
-
-            if (newRatio !== '6000' && !queryParams.includes('sphd=')) {
-                queryParams += "&sphd=1";
-            }
-        }
-
-        // LẮP RÁP LINK HOÀN CHỈNH
-        let finalUrl = `${domain}${id}.flv?ver=1&id=${id}&${queryParams}&u=0&t=100&a_block=0`;
-
-        // Quét rác lần cuối chống sập Vercel
-        finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
-
-        res.setHeader('Cache-Control', 'no-cache');
-        res.redirect(302, finalUrl);
-
-    } catch (error) {
-        res.status(500).send("Lỗi hệ thống: " + error.message);
+      const res = await fetch(url, { headers: { "User-Agent": ANDROID_UA } });
+      if (!res.ok) { lastError = `HTTP ${res.status} at ${url}`; continue; }
+      const html = await res.text();
+      if (RE_ROOM.test(html)) return { html, error: null };
+      lastError = `G_roomBaseInfo not found at ${url}`;
+    } catch (err) {
+      lastError = err.message;
     }
+  }
+  return { html: null, error: lastError };
+}
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+
+  const username = req.query.username || req.query.id;
+  if (!username) {
+    return res.status(400).json({ error: "Missing ?username= or ?id= query parameter" });
+  }
+
+  // 1. Fetch page
+  const { html, error: fetchError } = await fetchPage(username);
+  if (!html) return res.status(502).json({ error: `Failed to fetch page: ${fetchError}` });
+
+  // 2. Parse room info
+  const roomMatch = RE_ROOM.exec(html);
+  if (!roomMatch) return res.status(404).json({ error: "Room info not found." });
+
+  let roomData;
+  try { roomData = JSON.parse(roomMatch[1]); }
+  catch { return res.status(500).json({ error: "Failed to parse room JSON" }); }
+
+  const { title, nickname, game, liveStreamStatus, mStreamPkg } = roomData;
+
+  if (liveStreamStatus === 0) {
+    return res.status(200).json({ online: false, author: nickname, category: game, title, url: null });
+  }
+
+  if (!mStreamPkg) {
+    return res.status(200).json({ online: true, author: nickname, category: game, title, url: null, error: "mStreamPkg missing" });
+  }
+
+  // 3. Decode hex pkg
+  let pkgText;
+  try { pkgText = hexToLatin1(mStreamPkg); }
+  catch { return res.status(500).json({ error: "Failed to decode mStreamPkg" }); }
+
+  let appid, domain, id, tp, wsSecret, wsTime;
+  try {
+    appid    = extractGroup(RE_APPID,    pkgText);
+    domain   = extractGroup(RE_DOMAIN,   pkgText, 0);
+    id       = extractGroup(RE_ID,       pkgText);
+    tp       = extractGroup(RE_TP,       pkgText);
+    wsSecret = extractGroup(RE_WSSECRET, pkgText);
+    wsTime   = extractGroup(RE_WSTIME,   pkgText);
+  } catch (err) {
+    return res.status(500).json({ error: `Invalid mStreamPkg: ${err.message}` });
+  }
+
+  if (!domain.endsWith("/")) domain += "/";
+
+  // 4. Build auto-quality URL (no ratio param → server picks best quality)
+  const streamUrl = new URL(`${domain}${id}.flv`);
+  streamUrl.hostname = streamUrl.hostname.replace("hls.nimo.tv", "flv.nimo.tv");
+  const params = { appid, id, tp, wsSecret, wsTime, u: "0", t: "100", needwm: "0" };
+  for (const [k, v] of Object.entries(params)) streamUrl.searchParams.set(k, v);
+
+  return res.status(200).json({
+    online: true,
+    author: nickname,
+    category: game,
+    title,
+    url: streamUrl.toString(),
+  });
 }
