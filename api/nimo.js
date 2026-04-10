@@ -1,24 +1,30 @@
 export default async function handler(req, res) {
-    // Lấy Username hoặc ID
-    const username = req.query.id || '879386692';
+    // 1. Nhận ID
+    const roomId = req.query.id || '879386692';
     
-    // Theo đúng code Python: Nimo chấp nhận m.nimo.tv/username
-    const url = `https://m.nimo.tv/${username}`;
+    // ==========================================
+    // PHỤC HỒI LOGIC CỦA BẠN: Tự nhận diện ID Số (Fix lỗi 404 Nimo)
+    // ==========================================
+    let path = roomId;
+    if (!isNaN(roomId) && !roomId.includes('/')) {
+        path = `live/${roomId}`;
+    }
+    
+    const url = `https://m.nimo.tv/${path}`;
 
     try {
         const response = await fetch(url, {
             headers: {
-                // User-Agent y hệt Streamlink
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36'
             }
         });
 
         const html = await response.text();
         
-        // Regex nồi đồng cối đá của Streamlink
+        // 2. Bắt HTML
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
         if (!jsonMatch) {
-            return res.status(404).send("Stream Offline / Lỗi bóc tách HTML");
+            return res.status(404).send(`Stream Offline / Lỗi bóc tách HTML. Đã thử tìm tại URL: ${url}`);
         }
 
         const data = JSON.parse(jsonMatch[1]);
@@ -31,12 +37,9 @@ export default async function handler(req, res) {
             return res.status(500).send("Không tìm thấy mStreamPkg");
         }
 
-        // Giải mã Hex giống Python: bytes.fromhex(mStreamPkg)
         const decodedPkg = Buffer.from(mStreamPkg, 'hex').toString('utf-8');
 
-        // ==========================================
-        // DÙNG CHÍNH XÁC REGEX TỪ PYTHON STREAMLINK
-        // ==========================================
+        // 3. Giải mã 100% chuẩn Streamlink
         const appidMatch = decodedPkg.match(/appid=(\d+)/);
         const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
         const idMatch = decodedPkg.match(/id=([^|\\]+)/);
@@ -55,12 +58,10 @@ export default async function handler(req, res) {
         const wsSecret = wsSecretMatch[1];
         const wsTime = wsTimeMatch[1];
 
-        // Replace hls -> flv
+        // HLS sang FLV
         domain = domain.replace('hls.nimo.tv', 'flv.nimo.tv');
 
-        // ==========================================
-        // CHỌN CHẤT LƯỢNG (Tôn trọng luồng gốc)
-        // ==========================================
+        // 4. Chất lượng thông minh
         const ratioMatch = decodedPkg.match(/ratio=(\d+)/);
         let ratio = ratioMatch ? ratioMatch[1] : '2500';
 
@@ -75,13 +76,10 @@ export default async function handler(req, res) {
         let needwm = (ratio === '6000') ? '0' : '1';
         let sphd = (ratio !== '6000') ? '&sphd=1' : '';
 
-        // ==========================================
-        // LẮP RÁP URL CHUẨN 100% NHƯ PYTHON
-        // Bỏ hết trò giả lập u ngẫu nhiên, dùng đúng u=0, t=100
-        // ==========================================
+        // 5. Ráp link
         let finalUrl = `${domain}${id_}.flv?appid=${appid}&id=${id_}&tp=${tp}&wsSecret=${wsSecret}&wsTime=${wsTime}&u=0&t=100&needwm=${needwm}&ratio=${ratio}${sphd}`;
 
-        // Dọn dẹp byte ẩn (Chống lỗi Invalid Header)
+        // Quét ký tự rác chống sập Vercel
         finalUrl = finalUrl.replace(/[\r\n\s\0]+/g, '');
 
         res.setHeader('Cache-Control', 'no-cache');
