@@ -12,138 +12,70 @@ export default async function handler(req, res) {
         path = `live/${roomId}`;
     }
 
-    const VIDEO_QUALITIES = [
-        { ratio: 6000, label: '1080p', needwm: 0, sphd: false },
-        { ratio: 2500, label: '720p',  needwm: 1, sphd: true  },
-        { ratio: 1000, label: '480p',  needwm: 1, sphd: true  },
-        { ratio: 500,  label: '360p',  needwm: 1, sphd: true  },
-        { ratio: 250,  label: '240p',  needwm: 1, sphd: false },
-    ];
-
-    const Q_MAP = {
-        '1080': 6000, '720': 2500,
-        '480': 1000, '360': 500, '240': 250,
-    };
+    const url = `https://m.nimo.tv/${path}`;
 
     try {
-        const response = await fetch(`https://m.nimo.tv/${path}`, {
+        const response = await fetch(url, {
             headers: {
-                'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 12; Android SDK built for arm64 Build/SE1A.220630.001)',
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36',
                 'Accept-Encoding': 'gzip, deflate, br'
             }
         });
-
-        if (!response.ok) {
-            return res.status(502).send(`Không thể kết nối tới Nimo (HTTP ${response.status}).`);
-        }
 
         const html = await response.text();
         const jsonMatch = html.match(/<script>var G_roomBaseInfo = ({.*?});<\/script>/);
 
         if (!jsonMatch) {
-            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra lại ID.");
+            return res.status(404).send("Không tìm thấy dữ liệu phòng. Kiểm tra ID.");
         }
 
-        let data;
-        try {
-            data = JSON.parse(jsonMatch[1]);
-        } catch {
-            return res.status(500).send("Lỗi parse JSON từ trang Nimo.");
-        }
-
+        const data = JSON.parse(jsonMatch[1]);
         if (data.liveStreamStatus === 0) {
-            return res.status(200).json({
-                online:   false,
-                title:    data.title    || '',
-                author:   data.nickname || '',
-                category: data.game     || '',
-                message:  "Stream đang Offline.",
-            });
+            return res.status(200).send("Stream hiện đang Offline.");
         }
 
-        if (!data.mStreamPkg) {
-            return res.status(404).send("Thiếu mStreamPkg — stream có thể đang offline hoặc bị ẩn.");
+        const decodedPkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
+
+        const appid      = decodedPkg.match(/appid=(\d+)/)?.[1] || '81';
+        const domainMatch = decodedPkg.match(/(https?:\/\/[A-Za-z0-9]{2,3}\.hls[A-Za-z\.\/]+)(?:V|&)/);
+        const id         = decodedPkg.match(/id=([^|\\]+)/)?.[1];
+        const tp         = decodedPkg.match(/tp=(\d+)/)?.[1] || Date.now().toString();
+        const wsSecret   = decodedPkg.match(/wsSecret=(\w+)/)?.[1];
+        const wsTime     = decodedPkg.match(/wsTime=(\w+)/)?.[1];
+
+        if (!domainMatch || !id || !wsSecret) {
+            return res.status(500).send("Lỗi giải mã tham số luồng.");
         }
 
-        let pkg;
-        try {
-            pkg = Buffer.from(data.mStreamPkg, 'hex').toString('utf-8');
-        } catch {
-            return res.status(500).send("Lỗi decode mStreamPkg hex.");
-        }
+        let domain = domainMatch[1].replace('hls.nimo.tv', 'flv.nimo.tv');
 
-        const appid     = pkg.match(/appid=(\d+)/)?.[1];
-        const domainRaw = pkg.match(/(https?:\/\/[A-Za-z]{2,3}\.hls[A-Za-z.\/]+)(?:V|&)/)?.[1];
-        const id_       = pkg.match(/id=([^|\\]+)/)?.[1];
-        const tp        = pkg.match(/tp=(\d+)/)?.[1];
-        const wsSecret  = pkg.match(/wsSecret=(\w+)/)?.[1];
-        const wsTime    = pkg.match(/wsTime=(\w+)/)?.[1];
+        const q = req.query.q || '1080';
+        let ratio = '6000';
+        if (q === '720') ratio = '2500';
+        if (q === '480') ratio = '1000';
+        if (q === '360') ratio = '500';
+        if (q === '240') ratio = '250';
 
-        if (!appid || !domainRaw || !id_ || !tp || !wsSecret || !wsTime) {
-            return res.status(500).json({
-                error: "Lỗi giải mã mStreamPkg — thiếu tham số.",
-                debug: {
-                    hasAppid:    !!appid,
-                    hasDomain:   !!domainRaw,
-                    hasId:       !!id_,
-                    hasTp:       !!tp,
-                    hasWsSecret: !!wsSecret,
-                    hasWsTime:   !!wsTime,
-                },
-            });
-        }
+        const needwm = ratio === '6000' ? '0' : '1';
 
-        const domain    = domainRaw.replace('hls.nimo.tv', 'flv.nimo.tv');
-        const streamUrl = `${domain}${id_}.flv`;
+        // u=0 cố định theo Streamlink gốc (random gây buff)
+        const finalUrl = `${domain}${id}.flv?ver=1` +
+                         `&wsSecret=${wsSecret}` +
+                         `&wsTime=${wsTime}` +
+                         `&ctype=nimo_media_web` +
+                         `&appid=${appid}` +
+                         `&tp=${tp}` +
+                         `&needwm=${needwm}` +
+                         `&ratio=${ratio}` +
+                         (ratio !== '6000' ? '&sphd=1' : '') +
+                         `&u=0` +
+                         `&t=100`;
 
-        const buildParams = (q) => {
-            const p = new URLSearchParams({
-                appid,
-                id:     id_,
-                tp,
-                wsSecret,
-                wsTime,
-                u:      '0',
-                t:      '100',
-                needwm: String(q.needwm),
-                ratio:  String(q.ratio),
-            });
-            if (q.sphd) p.set('sphd', '1');
-            return p.toString();
-        };
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Stream-Quality', q);
+        res.redirect(302, finalUrl);
 
-        const qParam = req.query.q;
-
-        if (qParam) {
-            const targetRatio = Q_MAP[qParam];
-            if (!targetRatio) {
-                return res.status(400).send(`Chất lượng không hợp lệ. Dùng: ${Object.keys(Q_MAP).join(', ')}`);
-            }
-            const q = VIDEO_QUALITIES.find(v => v.ratio === targetRatio) || VIDEO_QUALITIES[0];
-            const finalUrl = `${streamUrl}?${buildParams(q)}`;
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('X-Stream-Quality', q.label);
-            return res.redirect(302, finalUrl);
-        }
-
-        const qualities = VIDEO_QUALITIES.map(q => ({
-            label: q.label,
-            ratio: q.ratio,
-            url:   `${streamUrl}?${buildParams(q)}`,
-        }));
-
-        return res.status(200).json({
-            online:    true,
-            title:     data.title    || '',
-            author:    data.nickname || '',
-            category:  data.game     || '',
-            qualities,
-        });
-
-    } catch (err) {
-        return res.status(500).json({
-            error:   "Lỗi hệ thống.",
-            message: err.message,
-        });
+    } catch (error) {
+        res.status(500).send("Lỗi hệ thống: " + error.message);
     }
 }
