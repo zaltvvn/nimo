@@ -29,6 +29,7 @@ export default async function handler(req, res) {
         const response = await fetch(`https://m.nimo.tv/${path}`, {
             headers: {
                 'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 12; Android SDK built for arm64 Build/SE1A.220630.001)',
+                'Accept-Encoding': 'gzip, deflate, br'
             }
         });
 
